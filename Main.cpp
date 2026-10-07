@@ -1,9 +1,14 @@
 #include <windows.h>
 #include "tp_stub.h"
 #include "MenuItemIntf.h"
-#include "resource.h"
 #include <tchar.h>
 #include <string.h>
+
+// stdcall exports are decorated on Win32; provide the names used by Plugins.link.
+#if defined(_MSC_VER) && defined(_M_IX86)
+#pragma comment(linker, "/EXPORT:V2Link=_V2Link@4")
+#pragma comment(linker, "/EXPORT:V2Unlink=_V2Unlink@0")
+#endif
 
 const tjs_char* TVPSpecifyWindow = NULL;
 const tjs_char* TVPSpecifyMenuItem = NULL;
@@ -11,58 +16,55 @@ const tjs_char* TVPInternalError = NULL;
 const tjs_char* TVPNotChildMenuItem = NULL;
 const tjs_char* TVPMenuIDOverflow = NULL;
 
-static void LoadMessageFromResource() {
-	static const int BUFF_SIZE = 1024;
-	HINSTANCE hInstance = ::GetModuleHandle(_T("menu.dll"));
-	TCHAR buffer[BUFF_SIZE];
-	TCHAR* work;
-	int len;
-
-	len = ::LoadString( hInstance, IDS_SPECIFY_WINDOW, buffer, BUFF_SIZE );
-	work = new TCHAR[len+1];
-	_tcscpy_s( work, len+1, buffer );
-	TVPSpecifyWindow = work;
-
-	len = ::LoadString( hInstance, IDS_SPECIFY_MENU_ITEM, buffer, BUFF_SIZE );
-	work = new TCHAR[len+1];
-	_tcscpy_s( work, len+1, buffer );
-	TVPSpecifyMenuItem = work;
-
-	len = ::LoadString( hInstance, IDS_INTERNAL_ERROR, buffer, BUFF_SIZE );
-	work = new TCHAR[len+1];
-	_tcscpy_s( work, len+1, buffer );
-	TVPInternalError = work;
-
-	len = ::LoadString( hInstance, IDS_NOT_CHILD_MENU_ITEM, buffer, BUFF_SIZE );
-	work = new TCHAR[len+1];
-	_tcscpy_s( work, len+1, buffer );
-	TVPNotChildMenuItem = work;
-	
-	len = ::LoadString( hInstance, IDS_MENU_ID_OVERFLOW, buffer, BUFF_SIZE );
-	work = new TCHAR[len+1];
-	_tcscpy_s( work, len+1, buffer );
-	TVPMenuIDOverflow = work;
-}
-static void FreeMessage() {
-	delete[] TVPSpecifyWindow;
-	delete[] TVPSpecifyMenuItem;
-	delete[] TVPInternalError;
-	delete[] TVPNotChildMenuItem;
-	delete[] TVPMenuIDOverflow;
-	TVPSpecifyWindow = NULL;
-	TVPSpecifyMenuItem = NULL;
-	TVPInternalError = NULL;
-	TVPNotChildMenuItem = NULL;
-	TVPMenuIDOverflow = NULL;
+// Keep translations in the source so no resource compiler is required.
+static void InitializeMessages() {
+	static const tjs_char* const japanese[] = {
+		TJS_W("Window クラスのオブジェクトを指定してください"),
+		TJS_W("MenuItem クラスのオブジェクトを指定してください"),
+		TJS_W("内部エラーが発生しました: at %1 line %2"),
+		TJS_W("指定されたメニュー項目はこのメニュー項目の子ではありません"),
+		TJS_W("これ以上 MenuItem を作ることは出来ません")
+	};
+	static const tjs_char* const chinese[] = {
+		TJS_W("请声明为 Window 类的对象。"),
+		TJS_W("请声明为 MenuItem 类的对象。"),
+		TJS_W("在 %1 行到 %2 行发生了内部错误。"),
+		TJS_W("当前声明的 菜单项 不是 子菜单。"),
+		TJS_W("不能创建菜单。菜单项过多。")
+	};
+	static const tjs_char* const english[] = {
+		TJS_W("Specify Window class object."),
+		TJS_W("Specify MenuItem class object."),
+		TJS_W("Internal error occurred. : at %1 line %2"),
+		TJS_W("The specified menu item is not a child of this menu item."),
+		TJS_W("Too many MenuItem. Cannot create MenuItem.")
+	};
+	const tjs_char* const* messages = english;
+	switch(PRIMARYLANGID(::GetUserDefaultUILanguage())) {
+	case LANG_JAPANESE: messages = japanese; break;
+	case LANG_CHINESE: messages = chinese; break;
+	}
+	TVPSpecifyWindow = messages[0];
+	TVPSpecifyMenuItem = messages[1];
+	TVPInternalError = messages[2];
+	TVPNotChildMenuItem = messages[3];
+	TVPMenuIDOverflow = messages[4];
 }
 static std::map<HWND,iTJSDispatch2*> MENU_LIST;
 static void AddMenuDispatch( HWND hWnd, iTJSDispatch2* menu ) {
 	MENU_LIST.insert( std::map<HWND, iTJSDispatch2*>::value_type( hWnd, menu ) );
 }
-static iTJSDispatch2* GetMenuDispatch( HWND hWnd ) {
+static iTJSDispatch2* GetMenuDispatch( HWND hWnd, iTJSDispatch2* window ) {
 	std::map<HWND, iTJSDispatch2*>::iterator i = MENU_LIST.find( hWnd );
 	if( i != MENU_LIST.end() ) {
-		return i->second;
+		iTJSDispatch2* menu = i->second;
+		// HWNDs are recycled. A live handle alone does not identify the Window.
+		if( menu->IsValid(0, NULL, NULL, menu) == TJS_S_TRUE &&
+			tTJSNI_MenuItem::CastFromVariant(tTJSVariant(menu, menu))->GetWindow() == window )
+			return menu;
+		MENU_LIST.erase(i);
+		menu->Invalidate(0, NULL, NULL, menu);
+		menu->Release();
 	}
 	return NULL;
 }
@@ -77,14 +79,16 @@ static void UpdateMenuList() {
 	for( ; i != MENU_LIST.end(); ) {
 		HWND hWnd = i->first;
 		BOOL exist = ::IsWindow( hWnd );
-		if( exist == 0 ) {
+		if( exist == 0 || i->second->IsValid(0, NULL, NULL, i->second) != TJS_S_TRUE ) {
 			// 既になくなったWindow
 			std::map<HWND, iTJSDispatch2*>::iterator target = i;
 			i++;
 			iTJSDispatch2* menu = target->second;
 			MENU_LIST.erase( target );
+			menu->Invalidate(0, NULL, NULL, menu);
 			menu->Release();
-			TVPDeleteAcceleratorKeyTable( hWnd );
+			// Do not delete accelerator keys belonging to a recycled HWND.
+			if( !exist ) TVPDeleteAcceleratorKeyTable( hWnd );
 		} else {
 			i++;
 		}
@@ -97,9 +101,9 @@ class WindowMenuProperty : public tTJSDispatch {
 			return TJS_E_INVALIDOBJECT;
 		}
 		HWND hWnd = (HWND)(tjs_int64)var;
-		iTJSDispatch2* menu = GetMenuDispatch( hWnd );
+		UpdateMenuList();
+		iTJSDispatch2* menu = GetMenuDispatch( hWnd, objthis );
 		if( menu == NULL ) {
-			UpdateMenuList();
 			menu = TVPCreateMenuItemObject(objthis);
 			AddMenuDispatch( hWnd, menu );
 		}
@@ -172,7 +176,7 @@ int WINAPI DllEntryPoint(HINSTANCE hinst, unsigned long reason, void* lpReserved
 static tjs_int GlobalRefCountAtInit = 0;
 extern "C" __declspec(dllexport) HRESULT _stdcall V2Link(iTVPFunctionExporter *exporter)
 {
-	LoadMessageFromResource();
+	InitializeMessages();
 
 	// スタブの初期化(必ず記述する)
 	TVPInitImportStub(exporter);
@@ -267,7 +271,6 @@ extern "C" __declspec(dllexport) HRESULT _stdcall V2Unlink()
 	// スタブの使用終了(必ず記述する)
 	TVPUninitImportStub();
 
-	FreeMessage();
 	return S_OK;
 }
 //---------------------------------------------------------------------------

@@ -50,6 +50,14 @@ WindowMenuItem::~WindowMenuItem() {
 		parent_->Remove( this );
 		parent_ = NULL;
 	}
+	// Each item owns its HMENU, including leaf items. Detach submenus before
+	// destroying this handle so Windows does not destroy a child's handle twice.
+	while( !children_.empty() ) Remove(children_.back());
+	if( hMenu_ && ::IsMenu(hMenu_) ) {
+		if( ::GetMenu(hWnd_) == hMenu_ ) ::SetMenu(hWnd_, NULL);
+		::DestroyMenu(hMenu_);
+	}
+	hMenu_ = NULL;
 	if( menu_item_info_.dwTypeData ) {
 		delete[] (TCHAR*)menu_item_info_.dwTypeData;
 		menu_item_info_.dwTypeData = NULL;

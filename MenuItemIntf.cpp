@@ -120,6 +120,7 @@ static tjs_int32 TJS_NATIVE_CLASSID_NAME = -1;
 tTJSNI_MenuItem::tTJSNI_MenuItem()
 {
 	Owner = NULL;
+	MenuItem = NULL;
 	OwnerWindow = NULL;
 	Parent = NULL;
 	ChildrenArrayValid = false;
@@ -190,9 +191,17 @@ tjs_error TJS_INTF_METHOD tTJSNI_MenuItem::Construct(tjs_int numparams, tTJSVari
 //---------------------------------------------------------------------------
 void TJS_INTF_METHOD tTJSNI_MenuItem::Invalidate()
 {
-	bool dodeletemenuitem = (OwnerWindow == NULL);
-
+	if(!Owner) return;
 	TVPCancelSourceEvents(Owner);
+	if(OwnerWindow && OwnerWindow->IsValid(0, NULL, NULL, OwnerWindow) == TJS_S_TRUE) {
+		tTJSVariant mode((tjs_int)wrmUnregister);
+		tTJSVariant proc((tTVInteger)reinterpret_cast<tjs_intptr_t>(MyReceiver));
+		tTJSVariant userdata((tTVInteger)reinterpret_cast<tjs_intptr_t>(this));
+		tTJSVariant *params[3] = {&mode, &proc, &userdata};
+		OwnerWindow->FuncCall(0, TJS_W("registerMessageReceiver"), NULL,
+			NULL, 3, params, OwnerWindow);
+	}
+	if(Parent) Parent->RemoveChild(this);
 
 	{ // locked
 		tObjectListSafeLockHolder<tTJSNI_MenuItem> holder(Children);
@@ -204,13 +213,16 @@ void TJS_INTF_METHOD tTJSNI_MenuItem::Invalidate()
 
 			if(item->Owner)
 			{
-				item->Owner->Invalidate(0, NULL, NULL, item->Owner);
-				item->Owner->Release();
+				iTJSDispatch2 *child = item->Owner;
+				Children.Remove(item);
+				item->Parent = NULL;
+				child->Invalidate(0, NULL, NULL, child);
+				child->Release();
 			}
 		}
 	} // locked
 
-//	Owner = NULL;
+	Owner = NULL;
 	OwnerWindow = NULL;
 	Parent = NULL;
 
@@ -222,7 +234,8 @@ void TJS_INTF_METHOD tTJSNI_MenuItem::Invalidate()
 
 	inherited::Invalidate();
 
-	if(dodeletemenuitem) delete MenuItem, MenuItem = NULL;
+	delete MenuItem;
+	MenuItem = NULL;
 }
 //---------------------------------------------------------------------------
 tTJSNI_MenuItem * tTJSNI_MenuItem::CastFromVariant(const tTJSVariant & from)
@@ -256,8 +269,8 @@ void tTJSNI_MenuItem::RemoveChild(tTJSNI_MenuItem *item)
 	if(Children.Remove(item))
 	{
 		ChildrenArrayValid = false;
-		if(item->Owner) item->Owner->Release();
 		item->Parent = NULL;
+		if(item->Owner) item->Owner->Release();
 	}
 }
 //---------------------------------------------------------------------------

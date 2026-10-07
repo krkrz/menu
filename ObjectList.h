@@ -72,7 +72,7 @@ private:
 	{
 		// commit the current array
 		// this simply free BackupedObjects ( and its related things )
-		if(BackupedObjects) free(BackupedObjects);
+		if(BackupedObjects) delete[] BackupedObjects;
 		BackupedObjects = NULL;
 		BackupedCount = 0;
 		Backuped = false;
